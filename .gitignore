@@ -2,4 +2,6 @@ kaggle-mlb-pitch-data-2015-2018
 *~
 model.png
 google-grow
+.venv
+*.csv.gz
 
