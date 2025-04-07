@@ -4,4 +4,5 @@ model.png
 google-grow
 .venv
 *.csv.gz
+*.parquet
 
