@@ -7,8 +7,21 @@ import numpy as np
 from sklearn import preprocessing
 from sklearn.preprocessing import OneHotEncoder
 import torch 
+import torch.optim as optim
 import torch.nn as nn
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+
+
+
+# TODO determine when this gets run
+SEED = 123
+torch.manual_seed(SEED)
+
+
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(SEED)
+    torch.cuda.manual_seed_all(SEED)
+
 
 
 ## TODO make this work as var args
@@ -66,13 +79,41 @@ class ClassifierDataset (torch.utils.data.Dataset):
 class TrainingManager:    
     ## TODO override tostring to print metrics
 
-    def __init__(self):
-        return
+    def __init__(self, model):
+        self.model = model
+
+    def train(self, dataloader, num_epochs):
+
+        # TODO figure out the approach for gpu support, doesnt matter 
+        # for toy datasets but is interestings
+        
+        loss_fn   = nn.BCELoss()  # binary cross entropy
+        optimizer = optim.Adam(self.model.parameters(), lr=0.001)
+
+        for epoch in range(num_epochs):
+            epoch_correct_count, epoch_pred_count = 0, 0
+            for X, y in dataloader:
+
+                y_pred = self.model(X)
+                y_pred = y_pred.reshape(y.shape)
+                loss = loss_fn(y_pred, y)
+
+                y_pred_guess = torch.round(y_pred)
+                batch_num_correct = (y == y_pred_guess).sum()
+                epoch_correct_count += batch_num_correct
+                epoch_pred_count += len(y)
+
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+            print(f"Epoch [{epoch+1}/{num_epochs}], {epoch_correct_count} of {epoch_pred_count} correct {(100*epoch_correct_count/epoch_pred_count):.1f} %")
+
+
     
     # takes an array of dataframes and an encoder
-    @staticmethod
-    def eval(model, test_dataloader):
-        model.eval()  # Set the model to evaluation mode
+    def eval(self, test_dataloader):
+        self.model.eval()  # Set the model to evaluation mode
 
         # Define your loss function (e.g., Binary Cross-Entropy)
         criterion = nn.BCEWithLogitsLoss()  # Commonly used for binary classification
@@ -89,7 +130,7 @@ class TrainingManager:
                 # just make this an array of the labels (instead array of arrays with one element)
                 labels = labels.reshape(-1)
 
-                y_pred = model(inputs)
+                y_pred = self.model(inputs)
                 y_pred = y_pred.reshape(labels.shape)  # make sure it matches
 
                 loss = criterion(y_pred, labels)
