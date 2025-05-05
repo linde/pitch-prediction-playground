@@ -2,12 +2,16 @@
 
 
 import pandas as pd
+import numpy as np
+
 from sklearn import preprocessing
 from sklearn.preprocessing import OneHotEncoder
 import torch 
+import torch.nn as nn
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
 
-## TODO make this work as vargs
+## TODO make this work as var args
 class ClassifierDataset (torch.utils.data.Dataset):    
     def __init__(self, raw_df, label_column):
         df_copy = raw_df.copy()
@@ -57,3 +61,55 @@ class ClassifierDataset (torch.utils.data.Dataset):
             processed_df_array.append(df_processed)
 
         return processed_df_array
+
+
+class TrainingManager:    
+    ## TODO override tostring to print metrics
+
+    def __init__(self):
+        return
+    
+    # takes an array of dataframes and an encoder
+    @staticmethod
+    def eval(model, test_dataloader):
+        model.eval()  # Set the model to evaluation mode
+
+        # Define your loss function (e.g., Binary Cross-Entropy)
+        criterion = nn.BCEWithLogitsLoss()  # Commonly used for binary classification
+
+        # Lists to store results
+        test_losses = []
+        all_preds = []
+        all_labels = []
+
+        # Iterate over the test batches
+        with torch.no_grad():  # Disable gradient calculations
+            for inputs, labels in test_dataloader:
+
+                # just make this an array of the labels (instead array of arrays with one element)
+                labels = labels.reshape(-1)
+
+                y_pred = model(inputs)
+                y_pred = y_pred.reshape(labels.shape)  # make sure it matches
+
+                loss = criterion(y_pred, labels)
+                test_losses.append(loss.item())
+
+                y_pred_guess = torch.round(y_pred)
+                
+                all_preds.extend(y_pred_guess.numpy())
+                all_labels.extend(labels.numpy())
+
+        # Calculate overall metrics
+        avg_test_loss = np.mean(test_losses)
+        accuracy = accuracy_score(all_labels, all_preds)
+        precision = precision_score(all_labels, all_preds)
+        recall = recall_score(all_labels, all_preds)
+        f1 = f1_score(all_labels, all_preds)
+
+        print(f"Average Test Loss: {avg_test_loss:.4f}")
+        print(f"Test Accuracy: {accuracy:.4f}")
+        print(f"Test Precision: {precision:.4f}")
+        print(f"Test Recall: {recall:.4f}")
+        print(f"Test F1-Score: {f1:.4f}")
+
