@@ -1,6 +1,5 @@
 
-
-
+import itertools
 import pandas as pd
 import numpy as np
 
@@ -24,7 +23,6 @@ if torch.cuda.is_available():
 
 
 
-## TODO make this work as var args
 class ClassifierDataset (torch.utils.data.Dataset):    
     def __init__(self, raw_df, label_column):
         df_copy = raw_df.copy()
@@ -55,6 +53,7 @@ class ClassifierDataset (torch.utils.data.Dataset):
     # takes an array of dataframes and an encoder
     @staticmethod
     def onehot_encode_datafames(df_array):
+        # TODO make this work as var args
         unioned_df = pd.concat(df_array)
         union_categorical_cols = unioned_df.select_dtypes(exclude=['number']).columns
         
@@ -74,6 +73,32 @@ class ClassifierDataset (torch.utils.data.Dataset):
             processed_df_array.append(df_processed)
 
         return processed_df_array
+
+
+class GeneralNN(nn.Module):
+    def __init__(self, inputFeatures, layerInputs, dropOutRate, outputLayer=nn.Sigmoid()):
+        super().__init__()
+        
+        stack = []
+        for fromLayer, toLayer in itertools.pairwise([inputFeatures] + layerInputs):
+            stack += [
+                nn.Linear(fromLayer, toLayer),
+                nn.GELU(),
+                nn.Dropout(p=dropOutRate), 
+            ]
+
+        # TODO consider a more pythonic way to clean up the output layers
+        # pop the last activation and nn.Dropout() going into the output layer
+        stack.pop()
+        stack.pop()
+
+        stack.append(outputLayer)
+        self.linear_relu_stack = nn.Sequential(*stack)
+
+    def forward(self, x):
+        return self.linear_relu_stack(x)
+
+
 
 
 class TrainingManager:    
