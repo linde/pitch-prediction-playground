@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 
 from sklearn import preprocessing
-from sklearn.preprocessing import OneHotEncoder
+from sklearn.preprocessing import OrdinalEncoder, OneHotEncoder, MinMaxScaler
 import torch 
 import torch.optim as optim
 import torch.nn as nn
@@ -22,19 +22,61 @@ if torch.cuda.is_available():
     torch.cuda.manual_seed_all(SEED)
 
 
+class NormalizedClassifierDatasetMetadata:
 
-class ClassifierDataset (torch.utils.data.Dataset):    
-    def __init__(self, raw_df, label_column):
-        df_copy = raw_df.copy()
+    def __init__(self, label_column):
+        self.label_column = label_column
+        self.categorical_map = {}
+        self.ordinal_map = {}
+        self.ordinal_numeric_cols = []
+
+    def set_categorical_map(self, categorical_map):
+        self.categorical_map = categorical_map
+
+    def set_ordinal_map(self, ordinal_map):
+        self.ordinal_map = ordinal_map
+
+    ## todo provide a helper that gets the numerics from a dataframe
+    def set_ordinal_numeric_cols(self, ordinal_numeric_cols):
+        self.ordinal_numeric_cols = ordinal_numeric_cols
+
+
+class NormalizedClassifierDataset (torch.utils.data.Dataset):
+
+    def __init__(self, orig_df, ds_meta):      
+        df_copy = orig_df.copy()
 
         # first, set aside the labels
-        self.labels_ndarray = df_copy.pop(label_column).values
+        self.labels_ndarray = df_copy.pop(ds_meta.label_column).values
 
-        # TODO consider asserting about dtypes (ie only numerics at this point)
+        # prepare a OneHotEncoder for values in the categorical_map
+        mapped_values_array = list(ds_meta.categorical_map.values())
+        mapped_cols = ds_meta.categorical_map.keys()
+        ohe = OneHotEncoder(sparse_output=False, handle_unknown='ignore', categories=mapped_values_array)
+        ohe = ohe.fit( df_copy[mapped_cols] )
+        # apply it to the df using the new names from the encoder
+        newFeatureColsForEncoding = ohe.get_feature_names_out()
+        df_copy[ newFeatureColsForEncoding ] = ohe.transform( df_copy[mapped_cols] )
+        # # clean up orig we've encde
+        df_copy.drop( mapped_cols, axis=1, inplace=True)
 
-        # process columns to normalize values 
-        scaler = preprocessing.MinMaxScaler()
-        self.features_ndarray = scaler.fit_transform(df_copy)
+
+        # now deal with the ordinals. use the rankings froom the map to apply an 
+        # OrdinalEncoder in place one column at a time
+        for col, ordered_categories in ds_meta.ordinal_map.items():
+            col_ordinal_encoder = OrdinalEncoder(categories=[ordered_categories])
+            df_copy[col] = col_ordinal_encoder.fit_transform( df_copy[ [col] ] )
+
+
+        # finally, scale the numeric ordinal columns
+        if len(ds_meta.ordinal_numeric_cols) > 0:
+            scaler = MinMaxScaler()
+            df_copy[ds_meta.ordinal_numeric_cols] = scaler.fit_transform(df_copy[ds_meta.ordinal_numeric_cols])
+
+        # TODO drop cols that werent present in any of: 
+        # label_column, categorical_map.keys(), ordinal_map.keys(), ordinal_numeric_cols
+        self.features_ndarray = df_copy.to_numpy()
+            
         
     def __len__(self):
         return self.features_ndarray.shape[0]
@@ -48,32 +90,7 @@ class ClassifierDataset (torch.utils.data.Dataset):
     
     def get_feature_count(self):
         return len(self.features_ndarray[0])
-
-
-    # takes an array of dataframes and an encoder
-    @staticmethod
-    def onehot_encode_datafames(df_array):
-        # TODO make this work as var args
-        unioned_df = pd.concat(df_array)
-        union_categorical_cols = unioned_df.select_dtypes(exclude=['number']).columns
-        
-        ohe = OneHotEncoder(sparse_output=False, handle_unknown='ignore', )
-        ohe = ohe.fit( unioned_df[union_categorical_cols] )
-
-        processed_df_array = []
-        for df in df_array:
-            # first transform using the encoder that was fit on the unioned data
-            encoded_values = ohe.transform( df[union_categorical_cols] )
-            # and make a dataframe from that
-            encoded_value_features = ohe.get_feature_names_out()
-            encoded_df = pd.DataFrame(encoded_values, columns=encoded_value_features)
-            # drop the encoded features from the original df and concat the encodings
-            df_processed = pd.concat([df.drop(columns=union_categorical_cols), encoded_df], axis=1)
-            # and finally, set it aside
-            processed_df_array.append(df_processed)
-
-        return processed_df_array
-
+    
 
 class GeneralNN(nn.Module):
     def __init__(self, inputFeatures, layerInputs, dropOutRate, outputLayer=nn.Sigmoid()):
@@ -97,8 +114,6 @@ class GeneralNN(nn.Module):
 
     def forward(self, x):
         return self.linear_relu_stack(x)
-
-
 
 
 class TrainingManager:    
