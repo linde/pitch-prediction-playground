@@ -29,6 +29,7 @@ class NormalizedClassifierDatasetMetadata:
         self.categorical_map = {}
         self.ordinal_map = {}
         self.ordinal_numeric_cols = []
+        self.embedding_cols = []
 
     def set_categorical_map(self, categorical_map):
         self.categorical_map = categorical_map
@@ -40,11 +41,27 @@ class NormalizedClassifierDatasetMetadata:
     def set_ordinal_numeric_cols(self, ordinal_numeric_cols):
         self.ordinal_numeric_cols = ordinal_numeric_cols
 
+    def set_embedding_cols(self, embedding_cols):
+        self.embedding_cols = embedding_cols
 
+    def get_columns(self):
+        return (
+            [self.label_column]
+            + list(self.categorical_map.keys())
+            + list(self.ordinal_map.keys()) 
+            + self.ordinal_numeric_cols 
+            + self.embedding_cols            
+        )
+
+# TODO we need an encodingf approaoch for higher cardinality categoricals
 class NormalizedClassifierDataset (torch.utils.data.Dataset):
 
     def __init__(self, orig_df, ds_meta):      
         df_copy = orig_df.copy()
+
+        # first step, only select the columns defined in ds_meta
+
+        df_copy = df_copy[ ds_meta.get_columns() ]
 
         # first, set aside the labels
         self.labels_ndarray = df_copy.pop(ds_meta.label_column).values
@@ -52,7 +69,7 @@ class NormalizedClassifierDataset (torch.utils.data.Dataset):
         # prepare a OneHotEncoder for values in the categorical_map
         mapped_values_array = list(ds_meta.categorical_map.values())
         mapped_cols = ds_meta.categorical_map.keys()
-        ohe = OneHotEncoder(sparse_output=False, handle_unknown='ignore', categories=mapped_values_array)
+        ohe = OneHotEncoder(sparse_output=False, handle_unknown='error', categories=mapped_values_array)
         ohe = ohe.fit( df_copy[mapped_cols] )
         # apply it to the df using the new names from the encoder
         newFeatureColsForEncoding = ohe.get_feature_names_out()
@@ -60,23 +77,38 @@ class NormalizedClassifierDataset (torch.utils.data.Dataset):
         # # clean up orig we've encde
         df_copy.drop( mapped_cols, axis=1, inplace=True)
 
-
         # now deal with the ordinals. use the rankings froom the map to apply an 
         # OrdinalEncoder in place one column at a time
         for col, ordered_categories in ds_meta.ordinal_map.items():
             col_ordinal_encoder = OrdinalEncoder(categories=[ordered_categories])
             df_copy[col] = col_ordinal_encoder.fit_transform( df_copy[ [col] ] )
 
-
-        # finally, scale the numeric ordinal columns
+        # next scale the numeric ordinal columns
         if len(ds_meta.ordinal_numeric_cols) > 0:
             scaler = MinMaxScaler()
             df_copy[ds_meta.ordinal_numeric_cols] = scaler.fit_transform(df_copy[ds_meta.ordinal_numeric_cols])
 
-        # TODO drop cols that werent present in any of: 
-        # label_column, categorical_map.keys(), ordinal_map.keys(), ordinal_numeric_cols
-        self.features_ndarray = df_copy.to_numpy()
-            
+        # here we deal with embeddings
+        # TODO deal with the fact that they might not be numeric ids with a lookup
+        if len(ds_meta.embedding_cols) > 0:  
+            embedding_values = []
+            for col in ds_meta.embedding_cols:
+                # first, let's create an index for each col value
+                col_value_index = {val.item(): idx for idx, val in enumerate( df_copy[col].fillna(0).unique() )}
+                indexesForColumn = df_copy[col].map(col_value_index)
+                num_embeddings = len(col_value_index) # have embeddings for each key
+                embedding_dim = int(max(np.ceil(num_embeddings ** 0.25), 4)) # use "fourth root" rule of thumb 
+                col_embedding_layer = nn.Embedding(num_embeddings, embedding_dim)
+
+                colEmbeddings = col_embedding_layer( torch.tensor(indexesForColumn.to_numpy(), requires_grad=False)  )
+                embedding_values.append(colEmbeddings)
+
+        # let's finalize the contents of the dataframe and get it into tensor
+        features_tensor = torch.tensor(df_copy.to_numpy().astype(float)).detach()
+        
+        # and cat the results of embeddings onto it
+        combined_tensor = torch.cat( (features_tensor, *embedding_values), dim=1)
+        self.features_ndarray = combined_tensor
         
     def __len__(self):
         return self.features_ndarray.shape[0]
@@ -147,7 +179,7 @@ class TrainingManager:
                 loss.backward()
                 optimizer.step()
 
-            print(f"Epoch [{epoch+1}/{num_epochs}], {epoch_correct_count} of {epoch_pred_count} correct {(100*epoch_correct_count/epoch_pred_count):.1f} %")
+            print(f"Epoch [{epoch+1}/{num_epochs}], {epoch_correct_count} of {epoch_pred_count} correct {(100*epoch_correct_count/epoch_pred_count):.2f} %")
 
 
     
@@ -186,7 +218,7 @@ class TrainingManager:
         accuracy = accuracy_score(all_labels, all_preds)
         precision = precision_score(all_labels, all_preds)
         recall = recall_score(all_labels, all_preds)
-        f1 = f1_score(all_labels, all_preds)
+        f1 = f1_score(all_labels, all_preds, zero_division=np.nan)
 
         print(f"Average Test Loss: {avg_test_loss:.4f}")
         print(f"Test Accuracy: {accuracy:.4f}")
