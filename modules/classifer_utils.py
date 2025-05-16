@@ -100,11 +100,11 @@ class NormalizedClassifierDataset (torch.utils.data.Dataset):
                 embedding_dim = int(max(np.ceil(num_embeddings ** 0.25), 4)) # use "fourth root" rule of thumb 
                 col_embedding_layer = nn.Embedding(num_embeddings, embedding_dim)
 
-                colEmbeddings = col_embedding_layer( torch.tensor(indexesForColumn.to_numpy(), requires_grad=False)  )
+                colEmbeddings = col_embedding_layer( torch.tensor(indexesForColumn.to_numpy())  )
                 embedding_values.append(colEmbeddings)
 
         # let's finalize the contents of the dataframe and get it into tensor
-        features_tensor = torch.tensor(df_copy.to_numpy().astype(float)).detach()
+        features_tensor = torch.tensor(df_copy.to_numpy().astype(float))
         
         # and cat the results of embeddings onto it
         combined_tensor = torch.cat( (features_tensor, *embedding_values), dim=1)
@@ -121,7 +121,8 @@ class NormalizedClassifierDataset (torch.utils.data.Dataset):
         return features_tensor, label_tensor 
     
     def get_feature_count(self):
-        return len(self.features_ndarray[0])
+        ## need to clone/detach/do ritual sacrifice so it doesnt warn about needing grad externally
+        return len(self.features_ndarray[0].clone().detach().requires_grad_(True))
     
 
 class GeneralNN(nn.Module):
@@ -156,32 +157,50 @@ class TrainingManager:
 
     def train(self, dataloader, num_epochs):
 
-        # TODO figure out the approach for gpu support, doesnt matter 
-        # for toy datasets but is interestings
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+        else:
+            device = torch.device("cpu")
         
+        self.model.to(device)
+        print(f'trainging using: {device} device')
+
+
         loss_fn   = nn.BCELoss()  # binary cross entropy
         optimizer = optim.Adam(self.model.parameters(), lr=0.001)
 
         for epoch in range(num_epochs):
-            epoch_correct_count, epoch_pred_count = 0, 0
+
+            self.model.train()
+            epoch_running_loss, epoch_running_correct, epoch_running_guesses = 0.0, 0, 0
+
             for X, y in dataloader:
+
+                X, y = X.to(device), y.to(device)
+
+                optimizer.zero_grad()
 
                 y_pred = self.model(X)
                 y_pred = y_pred.reshape(y.shape)
-                loss = loss_fn(y_pred, y)
 
                 y_pred_guess = torch.round(y_pred)
                 batch_num_correct = (y == y_pred_guess).sum()
-                epoch_correct_count += batch_num_correct
-                epoch_pred_count += len(y)
+                batch_guesses = len(y_pred_guess)
 
-                optimizer.zero_grad()
+                loss = loss_fn(y_pred, y)
                 loss.backward()
                 optimizer.step()
 
-            print(f"Epoch [{epoch+1}/{num_epochs}], {epoch_correct_count} of {epoch_pred_count} correct {(100*epoch_correct_count/epoch_pred_count):.2f} %")
+                epoch_running_correct += batch_num_correct
+                epoch_running_guesses += batch_guesses
+                epoch_running_loss += loss.item() * batch_guesses
 
-
+            epoch_avg_loss = epoch_running_loss / len(dataloader.dataset)
+            print( (
+                f'Epoch [{epoch+1}/{num_epochs}], '
+                f'Avg training Loss: {epoch_avg_loss:.4f}, '
+                f'Accuracy: {epoch_running_correct}/{epoch_running_guesses} ({epoch_running_correct/epoch_running_guesses:.4f})'
+            ))
     
     # takes an array of dataframes and an encoder
     def eval(self, test_dataloader):
