@@ -3,7 +3,6 @@ import itertools
 import pandas as pd
 import numpy as np
 
-from sklearn import preprocessing
 from sklearn.preprocessing import OrdinalEncoder, OneHotEncoder, MinMaxScaler
 import torch 
 import torch.optim as optim
@@ -16,6 +15,8 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 SEED = 123
 torch.manual_seed(SEED)
 
+DEFAULT_DTYPE=torch.float32
+# DEFAULT_DTYPE=float
 
 if torch.cuda.is_available():
     torch.cuda.manual_seed(SEED)
@@ -64,7 +65,7 @@ class NormalizedClassifierDataset (torch.utils.data.Dataset):
         df_copy = df_copy[ ds_meta.get_columns() ]
 
         # first, set aside the labels
-        self.labels_ndarray = df_copy.pop(ds_meta.label_column).values
+        self.labels_ndarray = torch.tensor(df_copy.pop(ds_meta.label_column).values, dtype=DEFAULT_DTYPE)
 
         # prepare a OneHotEncoder for values in the categorical_map
         mapped_values_array = list(ds_meta.categorical_map.values())
@@ -90,21 +91,21 @@ class NormalizedClassifierDataset (torch.utils.data.Dataset):
 
         # here we deal with embeddings
         # TODO deal with the fact that they might not be numeric ids with a lookup
+        embedding_values = []
         if len(ds_meta.embedding_cols) > 0:  
-            embedding_values = []
             for col in ds_meta.embedding_cols:
                 # first, let's create an index for each col value
                 col_value_index = {val.item(): idx for idx, val in enumerate( df_copy[col].fillna(0).unique() )}
                 indexesForColumn = df_copy[col].map(col_value_index)
                 num_embeddings = len(col_value_index) # have embeddings for each key
                 embedding_dim = int(max(np.ceil(num_embeddings ** 0.25), 4)) # use "fourth root" rule of thumb 
-                col_embedding_layer = nn.Embedding(num_embeddings, embedding_dim)
+                col_embedding_layer = nn.Embedding(num_embeddings, embedding_dim, dtype=DEFAULT_DTYPE)
 
                 colEmbeddings = col_embedding_layer( torch.tensor(indexesForColumn.to_numpy())  )
                 embedding_values.append(colEmbeddings)
 
         # let's finalize the contents of the dataframe and get it into tensor
-        features_tensor = torch.tensor(df_copy.to_numpy().astype(float))
+        features_tensor = torch.tensor(df_copy.to_numpy(), dtype=DEFAULT_DTYPE)
         
         # and cat the results of embeddings onto it
         combined_tensor = torch.cat( (features_tensor, *embedding_values), dim=1)
@@ -114,9 +115,9 @@ class NormalizedClassifierDataset (torch.utils.data.Dataset):
         return self.features_ndarray.shape[0]
             
     def __getitem__(self, idx):
-        
-        features_tensor = torch.tensor(self.features_ndarray[idx], dtype=torch.float32)
-        label_tensor = torch.tensor(self.labels_ndarray[idx], dtype=torch.float32)
+
+        features_tensor = self.features_ndarray[idx]
+        label_tensor = self.labels_ndarray[idx]
 
         return features_tensor, label_tensor 
     
@@ -143,7 +144,7 @@ class GeneralNN(nn.Module):
         stack.pop()
 
         stack.append(outputLayer)
-        self.linear_relu_stack = nn.Sequential(*stack)
+        self.linear_relu_stack = nn.Sequential(*stack).to(dtype=DEFAULT_DTYPE)
 
     def forward(self, x):
         return self.linear_relu_stack(x)
@@ -157,13 +158,13 @@ class TrainingManager:
 
     def train(self, dataloader, num_epochs):
 
-        if torch.cuda.is_available():
-            device = torch.device("cuda")
-        else:
-            device = torch.device("cpu")
+        # if torch.cuda.is_available():
+        #     device = torch.device("cuda")
+        # else:
+        #     device = torch.device("cpu")
         
-        self.model.to(device)
-        print(f'trainging using: {device} device')
+        # self.model.to(device)
+        # print(f'trainging using: {device} device')
 
 
         loss_fn   = nn.BCELoss()  # binary cross entropy
@@ -176,8 +177,7 @@ class TrainingManager:
 
             for X, y in dataloader:
 
-                X, y = X.to(device), y.to(device)
-
+                # X, y = X.to(device), y.to(device)
                 optimizer.zero_grad()
 
                 y_pred = self.model(X)
@@ -190,7 +190,7 @@ class TrainingManager:
                 loss = loss_fn(y_pred, y)
                 loss.backward()
                 optimizer.step()
-
+                
                 epoch_running_correct += batch_num_correct
                 epoch_running_guesses += batch_guesses
                 epoch_running_loss += loss.item() * batch_guesses
