@@ -1,5 +1,6 @@
 
 import itertools
+import time
 import pandas as pd
 import numpy as np
 
@@ -24,6 +25,8 @@ if torch.cuda.is_available():
 
 
 class NormalizedClassifierDatasetMetadata:
+
+    ## TODO have metadata for the embedding dims
 
     def __init__(self, label_column):
         self.label_column = label_column
@@ -54,7 +57,6 @@ class NormalizedClassifierDatasetMetadata:
             + self.embedding_cols            
         )
 
-# TODO we need an encodingf approaoch for higher cardinality categoricals
 class NormalizedClassifierDataset (torch.utils.data.Dataset):
 
     def __init__(self, orig_df, ds_meta):      
@@ -78,7 +80,7 @@ class NormalizedClassifierDataset (torch.utils.data.Dataset):
         # # clean up orig we've encde
         df_copy.drop( mapped_cols, axis=1, inplace=True)
 
-        # now deal with the ordinals. use the rankings froom the map to apply an 
+        # now deal with the ordinals. use the rankings from the map to apply an 
         # OrdinalEncoder in place one column at a time
         for col, ordered_categories in ds_meta.ordinal_map.items():
             col_ordinal_encoder = OrdinalEncoder(categories=[ordered_categories])
@@ -90,7 +92,6 @@ class NormalizedClassifierDataset (torch.utils.data.Dataset):
             df_copy[ds_meta.ordinal_numeric_cols] = scaler.fit_transform(df_copy[ds_meta.ordinal_numeric_cols])
 
         # here we deal with embeddings
-        # TODO deal with the fact that they might not be numeric ids with a lookup
         embedding_values = []
         if len(ds_meta.embedding_cols) > 0:  
             for col in ds_meta.embedding_cols:
@@ -98,7 +99,7 @@ class NormalizedClassifierDataset (torch.utils.data.Dataset):
                 col_value_index = {val.item(): idx for idx, val in enumerate( df_copy[col].fillna(0).unique() )}
                 indexesForColumn = df_copy[col].map(col_value_index)
                 num_embeddings = len(col_value_index) # have embeddings for each key
-                embedding_dim = int(max(np.ceil(num_embeddings ** 0.25), 4)) # use "fourth root" rule of thumb 
+                embedding_dim = 2 # int(max(np.ceil(num_embeddings ** 0.25), 4)) # use "fourth root" rule of thumb 
                 col_embedding_layer = nn.Embedding(num_embeddings, embedding_dim, dtype=DEFAULT_DTYPE)
 
                 colEmbeddings = col_embedding_layer( torch.tensor(indexesForColumn.to_numpy())  )
@@ -158,19 +159,12 @@ class TrainingManager:
 
     def train(self, dataloader, num_epochs):
 
-        # if torch.cuda.is_available():
-        #     device = torch.device("cuda")
-        # else:
-        #     device = torch.device("cpu")
-        
-        # self.model.to(device)
-        # print(f'trainging using: {device} device')
-
-
         loss_fn   = nn.BCELoss()  # binary cross entropy
         optimizer = optim.Adam(self.model.parameters(), lr=0.001)
 
         for epoch in range(num_epochs):
+
+            epochStart = time.perf_counter()
 
             self.model.train()
             epoch_running_loss, epoch_running_correct, epoch_running_guesses = 0.0, 0, 0
@@ -199,7 +193,8 @@ class TrainingManager:
             print( (
                 f'Epoch [{epoch+1}/{num_epochs}], '
                 f'Avg training Loss: {epoch_avg_loss:.4f}, '
-                f'Accuracy: {epoch_running_correct}/{epoch_running_guesses} ({epoch_running_correct/epoch_running_guesses:.4f})'
+                f'Accuracy: {epoch_running_correct}/{epoch_running_guesses} ({epoch_running_correct/epoch_running_guesses:.4f}), '
+                f'in {time.perf_counter() - epochStart:.2f} seconds.'
             ))
     
     # takes an array of dataframes and an encoder
